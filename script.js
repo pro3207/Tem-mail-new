@@ -14,11 +14,12 @@ const backToInbox = document.getElementById("back-to-inbox");
 const deleteBtn = document.getElementById("delete-btn");
 const timerElement = document.getElementById("timer");
 const copyBtn = document.getElementById("copy-btn");
-const searchInput = document.getElementById("search-input");
 
 let emails = [];
 let selectedEmails = [];
 let timeLeft = 600;
+
+// Storage keys
 const TIMER_KEY = "tempmail_timer";
 const EMAIL_KEY = "tempmail_email";
 const TOKEN_KEY = "tempmail_token";
@@ -45,47 +46,88 @@ function initTheme() {
 // 📨 Create account + fetch token
 async function createTempAccount() {
     try {
+        console.log("🔄 Starting email generation...");
+        
+        // Show loading state
         generateBtn.disabled = true;
         generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
         
+        // Generate random username
         const username = Array.from(crypto.getRandomValues(new Uint8Array(6)))
             .map((b) => b.toString(36).padStart(2, "0")).join("");
         
-        // Get available domains
+        console.log("📧 Generated username:", username);
+        
+        // Get available domains - FIXED API CALL
+        console.log("🌐 Fetching domains...");
         const domainRes = await fetch("https://api.mail.tm/domains");
-        if (!domainRes.ok) throw new Error("Failed to fetch domains");
         
-        const domains = await domainRes.json();
-        const domain = domains["hydra:member"][0]?.domain;
+        if (!domainRes.ok) {
+            throw new Error(`Domain fetch failed: ${domainRes.status}`);
+        }
         
-        if (!domain) throw new Error("No domains available");
+        const domainData = await domainRes.json();
+        console.log("📦 Domain response:", domainData);
+        
+        // Extract domain from response - FIXED: Properly access the domain
+        const domains = domainData["hydra:member"];
+        if (!domains || domains.length === 0) {
+            throw new Error("No domains available from API");
+        }
+        
+        const domain = domains[0].domain;
+        console.log("✅ Selected domain:", domain);
         
         const email = `${username}@${domain}`;
         const password = `${Math.random().toString(36).substring(2, 10)}*Temp`;
 
-        // Create account
+        console.log("🔐 Creating account...");
+        // Create account - FIXED: Proper JSON structure
         const accountRes = await fetch("https://api.mail.tm/accounts", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ address: email, password }),
+            headers: { 
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            },
+            body: JSON.stringify({ 
+                address: email, 
+                password: password 
+            }),
         });
 
+        console.log("📨 Account creation response:", accountRes.status);
+        
         if (!accountRes.ok) {
-            throw new Error("Failed to create account");
+            const errorText = await accountRes.text();
+            throw new Error(`Account creation failed: ${accountRes.status} - ${errorText}`);
         }
 
-        // Get authentication token
+        const accountData = await accountRes.json();
+        console.log("✅ Account created:", accountData);
+
+        // Get authentication token - FIXED: Proper JSON structure
+        console.log("🔑 Getting authentication token...");
         const tokenRes = await fetch("https://api.mail.tm/token", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ address: email, password }),
+            headers: { 
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            },
+            body: JSON.stringify({ 
+                address: email, 
+                password: password 
+            }),
         });
         
+        console.log("🔑 Token response:", tokenRes.status);
+        
         if (!tokenRes.ok) {
-            throw new Error("Failed to get authentication token");
+            const errorText = await tokenRes.text();
+            throw new Error(`Token fetch failed: ${tokenRes.status} - ${errorText}`);
         }
         
         const tokenData = await tokenRes.json();
+        console.log("✅ Token received");
 
         // Update state
         currentAccount = email;
@@ -97,40 +139,53 @@ async function createTempAccount() {
         localStorage.setItem(EMAIL_KEY, email);
         localStorage.setItem(TOKEN_KEY, tokenData.token);
         
+        console.log("💾 Data stored in localStorage");
+        
         // Update UI
         generatedEmail.textContent = email;
         timeLeft = 600;
+        
+        // Start timer and fetch inbox
         startTimer();
-        fetchInbox();
+        await fetchInbox();
         
         showNotification("✅ Temporary email created successfully!");
         
     } catch (error) {
-        console.error("Error creating account:", error);
-        showNotification("❌ Failed to create temporary email. Please try again.");
+        console.error("❌ Error creating account:", error);
+        showNotification(`❌ Failed to create temporary email: ${error.message}`);
         
+        // Reset button state on error
         generateBtn.disabled = false;
         generateBtn.innerHTML = '<i class="fas fa-plus"></i> Generate New Address';
     }
 }
 
-// ⏱️ Start expiration countdown
+// ⏱️ Start expiration countdown - FIXED TIMER
 function startTimer() {
-    clearInterval(expirationTimer);
+    console.log("⏰ Starting timer...");
+    
+    // Clear any existing timer
+    if (expirationTimer) {
+        clearInterval(expirationTimer);
+    }
 
     const storedTime = localStorage.getItem(TIMER_KEY);
     const startTime = storedTime ? parseInt(storedTime, 10) : Date.now();
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
     timeLeft = Math.max(600 - elapsed, 0);
 
+    console.log("⏱️ Time left:", timeLeft, "seconds");
+
+    // Update display immediately
     updateTimerDisplay();
 
+    // Start countdown
     expirationTimer = setInterval(() => {
         timeLeft--;
         updateTimerDisplay();
 
-        if (timeLeft < 0) {
-            clearInterval(expirationTimer);
+        if (timeLeft <= 0) {
             handleExpiration();
         }
     }, 1000);
@@ -139,13 +194,52 @@ function startTimer() {
 function updateTimerDisplay() {
     const min = String(Math.floor(timeLeft / 60)).padStart(2, "0");
     const sec = String(timeLeft % 60).padStart(2, "0");
-    timerElement.innerHTML = `<i class="fas fa-hourglass-start"></i> Expires in: ${min}:${sec}`;
+    
+    if (timerElement) {
+        timerElement.innerHTML = `<i class="fas fa-hourglass-start"></i> Expires in: ${min}:${sec}`;
+        
+        // Change color when time is running out
+        if (timeLeft < 60) {
+            timerElement.style.color = "var(--danger)";
+        } else if (timeLeft < 180) {
+            timerElement.style.color = "var(--warning)";
+        } else {
+            timerElement.style.color = "var(--secondary)";
+        }
+    }
 }
 
 function handleExpiration() {
+    console.log("⏰ Timer expired");
+    
+    if (expirationTimer) {
+        clearInterval(expirationTimer);
+    }
+
+    // Reset everything
     emails = [];
-    renderEmailList();
-    timerElement.innerHTML = `<i class="fas fa-clock"></i> Mailbox expired`;
+    currentAccount = null;
+    currentToken = null;
+    
+    // Update UI
+    if (emailList) {
+        emailList.innerHTML = `
+            <div class="no-emails">
+                <i class="fas fa-clock fa-2x"></i>
+                <p>Mailbox expired - Generate a new email</p>
+            </div>
+        `;
+    }
+    
+    if (timerElement) {
+        timerElement.innerHTML = `<i class="fas fa-clock"></i> Mailbox expired`;
+        timerElement.style.color = "var(--danger)";
+    }
+    
+    if (unreadCount) {
+        unreadCount.textContent = "0";
+    }
+    
     showNotification("⏳ Temporary mailbox expired");
 
     // Clear storage
@@ -153,28 +247,39 @@ function handleExpiration() {
     localStorage.removeItem(EMAIL_KEY);
     localStorage.removeItem(TOKEN_KEY);
 
-    // Reset state
-    currentAccount = null;
-    currentToken = null;
-
     // Enable generate button
-    generateBtn.disabled = false;
-    generateBtn.classList.remove("disabled");
-    generateBtn.innerHTML = '<i class="fas fa-plus"></i> Generate New Address';
+    if (generateBtn) {
+        generateBtn.disabled = false;
+        generateBtn.classList.remove("disabled");
+        generateBtn.innerHTML = '<i class="fas fa-plus"></i> Generate New Address';
+    }
 }
 
-// 📬 Fetch inbox messages
+// 📬 Fetch inbox messages - FIXED API CALL
 async function fetchInbox() {
-    if (!currentToken) return;
+    if (!currentToken) {
+        console.log("❌ No token available for fetching inbox");
+        return;
+    }
     
     try {
+        console.log("📥 Fetching inbox...");
         const res = await fetch("https://api.mail.tm/messages", {
-            headers: { Authorization: `Bearer ${currentToken}` },
+            headers: { 
+                Authorization: `Bearer ${currentToken}`,
+                "Accept": "application/json"
+            },
         });
         
-        if (!res.ok) throw new Error("Failed to fetch inbox");
+        console.log("📨 Inbox response status:", res.status);
+        
+        if (!res.ok) {
+            throw new Error(`Inbox fetch failed: ${res.status}`);
+        }
         
         const data = await res.json();
+        console.log("✅ Inbox data received:", data["hydra:member"]?.length || 0, "emails");
+        
         emails = data["hydra:member"].map((msg) => ({
             id: msg.id,
             sender: msg.from?.address || "Unknown Sender",
@@ -190,83 +295,33 @@ async function fetchInbox() {
         }));
         
         renderEmailList();
+        
     } catch (error) {
-        console.error("Error fetching inbox:", error);
+        console.error("❌ Error fetching inbox:", error);
         showNotification("❌ Failed to refresh inbox");
-    }
-}
-
-// 📥 View email detail
-async function showEmailDetail(email) {
-    try {
-        if (!email.content) {
-            const res = await fetch(`https://api.mail.tm/messages/${email.id}`, {
-                headers: { Authorization: `Bearer ${currentToken}` },
-            });
-            
-            if (!res.ok) throw new Error("Failed to fetch email content");
-            
-            const data = await res.json();
-            email.content = data.text || data.html || "(No content available)";
-        }
-
-        // Hide inbox, show detail
-        document.querySelector(".inbox-container").style.display = "none";
-        emailDetail.style.display = "block";
-        
-        // Populate email detail
-        document.getElementById("detail-sender").textContent = email.sender;
-        document.getElementById("detail-subject").textContent = email.subject;
-        document.getElementById("detail-date").textContent = email.fullDate;
-        
-        const emailBody = document.querySelector(".email-body");
-        if (email.content.includes("<") && email.content.includes(">")) {
-            // HTML content
-            emailBody.innerHTML = email.content;
-        } else {
-            // Plain text content
-            emailBody.innerHTML = `<pre style="white-space: pre-wrap; font-family: inherit;">${email.content}</pre>`;
-        }
-
-        // Mark as read
-        if (email.unread) {
-            email.unread = false;
-            renderEmailList();
-        }
-        
-    } catch (error) {
-        console.error("Error showing email detail:", error);
-        showNotification("❌ Failed to load email content");
     }
 }
 
 // 🧹 Render email list
 function renderEmailList() {
-    const searchTerm = searchInput.value.toLowerCase();
+    if (!emailList) return;
     
-    // Filter emails based on search
-    const filteredEmails = emails.filter(email => 
-        email.sender.toLowerCase().includes(searchTerm) ||
-        email.subject.toLowerCase().includes(searchTerm) ||
-        email.preview.toLowerCase().includes(searchTerm)
-    );
-
     emailList.innerHTML = "";
     
-    if (filteredEmails.length === 0) {
+    if (emails.length === 0) {
         emailList.innerHTML = `
             <div class="no-emails">
                 <i class="fas fa-inbox fa-2x"></i>
-                <p>${emails.length === 0 ? 'No emails yet' : 'No emails match your search'}</p>
+                <p>No emails yet. Your incoming messages will appear here.</p>
             </div>
         `;
-        unreadCount.textContent = "0";
+        if (unreadCount) unreadCount.textContent = "0";
         return;
     }
 
     let unread = 0;
     
-    filteredEmails.forEach((email) => {
+    emails.forEach((email) => {
         if (email.unread) unread++;
         
         const item = document.createElement("div");
@@ -286,7 +341,7 @@ function renderEmailList() {
         emailList.appendChild(item);
     });
     
-    unreadCount.textContent = unread.toString();
+    if (unreadCount) unreadCount.textContent = unread.toString();
 
     // Add event listeners
     attachEmailEventListeners();
@@ -299,7 +354,9 @@ function attachEmailEventListeners() {
             if (!e.target.classList.contains("email-checkbox-input")) {
                 const id = item.dataset.id;
                 const email = emails.find((e) => e.id === id);
-                showEmailDetail(email);
+                if (email) {
+                    showEmailDetail(email);
+                }
             }
         });
     });
@@ -311,7 +368,9 @@ function attachEmailEventListeners() {
             const id = checkbox.dataset.id;
             
             if (checkbox.checked) {
-                selectedEmails.push(id);
+                if (!selectedEmails.includes(id)) {
+                    selectedEmails.push(id);
+                }
             } else {
                 selectedEmails = selectedEmails.filter((i) => i !== id);
             }
@@ -322,12 +381,64 @@ function attachEmailEventListeners() {
 }
 
 function updateDeleteButtonState() {
-    if (selectedEmails.length > 0) {
-        deleteBtn.disabled = false;
-        deleteBtn.innerHTML = `<i class="fas fa-trash-alt"></i> Delete (${selectedEmails.length})`;
-    } else {
-        deleteBtn.disabled = true;
-        deleteBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Delete';
+    if (deleteBtn) {
+        if (selectedEmails.length > 0) {
+            deleteBtn.disabled = false;
+            deleteBtn.innerHTML = `<i class="fas fa-trash-alt"></i> Delete (${selectedEmails.length})`;
+        } else {
+            deleteBtn.disabled = true;
+            deleteBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Delete';
+        }
+    }
+}
+
+// 📥 View email detail
+async function showEmailDetail(email) {
+    try {
+        if (!email.content && currentToken) {
+            const res = await fetch(`https://api.mail.tm/messages/${email.id}`, {
+                headers: { 
+                    Authorization: `Bearer ${currentToken}`,
+                    "Accept": "application/json"
+                },
+            });
+            
+            if (!res.ok) throw new Error("Failed to fetch email content");
+            
+            const data = await res.json();
+            email.content = data.text || data.html || "(No content available)";
+        }
+
+        // Hide inbox, show detail
+        const inboxContainer = document.querySelector(".inbox-container");
+        if (inboxContainer) inboxContainer.style.display = "none";
+        if (emailDetail) emailDetail.style.display = "block";
+        
+        // Populate email detail - FIXED: Use existing HTML structure
+        document.getElementById("detail-sender").textContent = email.sender;
+        document.getElementById("detail-subject").textContent = email.subject;
+        document.getElementById("detail-date").textContent = email.fullDate;
+        
+        const emailBody = document.querySelector(".email-body");
+        if (emailBody) {
+            if (email.content.includes("<") && email.content.includes(">")) {
+                // HTML content
+                emailBody.innerHTML = email.content;
+            } else {
+                // Plain text content
+                emailBody.innerHTML = `<pre style="white-space: pre-wrap; font-family: inherit;">${email.content}</pre>`;
+            }
+        }
+
+        // Mark as read
+        if (email.unread) {
+            email.unread = false;
+            renderEmailList();
+        }
+        
+    } catch (error) {
+        console.error("❌ Error showing email detail:", error);
+        showNotification("❌ Failed to load email content");
     }
 }
 
@@ -339,13 +450,18 @@ async function deleteSelectedEmails() {
     }
 
     try {
-        deleteBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...';
-        deleteBtn.disabled = true;
+        if (deleteBtn) {
+            deleteBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...';
+            deleteBtn.disabled = true;
+        }
 
         for (let id of selectedEmails) {
             await fetch(`https://api.mail.tm/messages/${id}`, {
                 method: "DELETE",
-                headers: { Authorization: `Bearer ${currentToken}` },
+                headers: { 
+                    Authorization: `Bearer ${currentToken}`,
+                    "Accept": "application/json"
+                },
             });
         }
 
@@ -354,23 +470,14 @@ async function deleteSelectedEmails() {
         showNotification("🗑️ Selected emails deleted");
         
     } catch (error) {
-        console.error("Error deleting emails:", error);
+        console.error("❌ Error deleting emails:", error);
         showNotification("❌ Failed to delete emails");
     } finally {
-        deleteBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Delete';
-        deleteBtn.disabled = true;
+        if (deleteBtn) {
+            deleteBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Delete';
+            deleteBtn.disabled = true;
+        }
     }
-}
-
-// 🔍 Search functionality
-function initSearch() {
-    let searchTimeout;
-    searchInput.addEventListener("input", (e) => {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(() => {
-            renderEmailList();
-        }, 300);
-    });
 }
 
 // 📋 Copy to clipboard
@@ -386,10 +493,12 @@ async function copyToClipboard() {
         await navigator.clipboard.writeText(emailText);
         showNotification("📋 Email copied to clipboard!");
         
-        copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
-        setTimeout(() => {
-            copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy';
-        }, 2000);
+        if (copyBtn) {
+            copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
+            setTimeout(() => {
+                copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+            }, 2000);
+        }
     } catch (err) {
         // Fallback for older browsers
         const textArea = document.createElement("textarea");
@@ -400,10 +509,12 @@ async function copyToClipboard() {
         document.body.removeChild(textArea);
         
         showNotification("📋 Email copied to clipboard!");
-        copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
-        setTimeout(() => {
-            copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy';
-        }, 2000);
+        if (copyBtn) {
+            copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
+            setTimeout(() => {
+                copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+            }, 2000);
+        }
     }
 }
 
@@ -426,175 +537,70 @@ function showNotification(message) {
     }, 3000);
 }
 
-// ❓ FAQ functionality
-function initFAQ() {
-    document.querySelectorAll("#faq .faq-item h3").forEach((question) => {
-        question.addEventListener("click", () => {
-            const faqItem = question.parentElement;
-            faqItem.classList.toggle("open");
-        });
-    });
-}
-
-// 📜 Modal Management
-function initModals() {
-    const modals = [
-        { openId: "openPrivacy", modalId: "privacyModal", closeId: "closePrivacy" },
-        { openId: "openTerms", modalId: "termsModal", closeId: "closeTerms" },
-        { openId: "openContact", modalId: "contactModal", closeId: "closeContact" },
-        { openId: "openApi", modalId: "apiModal", closeId: "closeApi" }
-    ];
-
-    modals.forEach(({ openId, modalId, closeId }) => {
-        const openBtn = document.getElementById(openId);
-        const modal = document.getElementById(modalId);
-        const closeBtn = document.getElementById(closeId);
-
-        if (!openBtn || !modal || !closeBtn) return;
-
-        openBtn.addEventListener("click", (e) => {
-            e.preventDefault();
-            modal.style.display = "block";
-            document.body.style.overflow = "hidden";
-        });
-
-        closeBtn.addEventListener("click", () => {
-            modal.style.display = "none";
-            document.body.style.overflow = "";
-        });
-
-        // Close modal when clicking outside
-        modal.addEventListener("click", (e) => {
-            if (e.target === modal) {
-                modal.style.display = "none";
-                document.body.style.overflow = "";
-            }
-        });
-    });
-
-    // Close modal with Escape key
-    document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") {
-            document.querySelectorAll(".modal").forEach(modal => {
-                modal.style.display = "none";
-                document.body.style.overflow = "";
-            });
-        }
-    });
-}
-
 // 🔄 Check email generation limit
 function checkEmailLimit() {
-    const history = JSON.parse(localStorage.getItem(LIMIT_KEY) || "[]");
-    const now = Date.now();
-    
-    // Remove entries older than 30 minutes
-    const recent = history.filter(t => now - t < LIMIT_WINDOW);
-    localStorage.setItem(LIMIT_KEY, JSON.stringify(recent));
-    
-    return recent.length;
-}
-
-// 🚀 Initialize application
-function initApp() {
-    const storedStart = localStorage.getItem(TIMER_KEY);
-    const storedEmail = localStorage.getItem(EMAIL_KEY);
-    const storedToken = localStorage.getItem(TOKEN_KEY);
-
-    if (storedStart && storedEmail && storedToken) {
-        // Restore existing session
-        currentAccount = storedEmail;
-        currentToken = storedToken;
-        generatedEmail.textContent = storedEmail;
-        
-        generateBtn.disabled = true;
-        generateBtn.classList.add("disabled");
-        generateBtn.innerHTML = '<i class="fas fa-lock"></i> Locked';
-        
-        startTimer();
-        fetchInbox();
-    } else {
-        // Clear any expired data
-        localStorage.removeItem(TIMER_KEY);
-        localStorage.removeItem(EMAIL_KEY);
-        localStorage.removeItem(TOKEN_KEY);
-    }
-}
-
-// 📝 Event Listeners
-document.addEventListener("DOMContentLoaded", () => {
-    // Initialize all components
-    initTheme();
-    initModals();
-    initFAQ();
-    initSearch();
-    initApp();
-
-    // Email generation
-    generateBtn.addEventListener("click", () => {
-        const recentCount = checkEmailLimit();
-        
-        if (recentCount >= MAX_EMAILS) {
-            showNotification(`🚫 Limit reached: You can only create ${MAX_EMAILS} emails every 30 minutes`);
-            return;
-        }
-
-        // Update limit counter
+    try {
         const history = JSON.parse(localStorage.getItem(LIMIT_KEY) || "[]");
-        history.push(Date.now());
-        localStorage.setItem(LIMIT_KEY, JSON.stringify(history));
+        const now = Date.now();
+        
+        // Remove entries older than 30 minutes
+        const recent = history.filter(t => now - t < LIMIT_WINDOW);
+        localStorage.setItem(LIMIT_KEY, JSON.stringify(recent));
+        
+        return recent.length;
+    } catch (error) {
+        console.error("Error checking limit:", error);
+        return 0;
+    }
+}
 
-        createTempAccount();
-    });
+// 🚀 Initialize application - FIXED INITIALIZATION
+function initApp() {
+    console.log("🚀 Initializing application...");
+    
+    try {
+        const storedStart = localStorage.getItem(TIMER_KEY);
+        const storedEmail = localStorage.getItem(EMAIL_KEY);
+        const storedToken = localStorage.getItem(TOKEN_KEY);
 
-    // Refresh inbox
-    refreshBtn.addEventListener("click", () => {
-        refreshBtn.innerHTML = '<i class="fas fa-sync-alt fa-spin"></i> Refreshing';
-        fetchInbox().then(() => {
-            refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
-            showNotification("🔁 Inbox refreshed");
-        }).catch(() => {
-            refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
-        });
-    });
+        if (storedStart && storedEmail && storedToken) {
+            // Restore existing session
+            const startTime = parseInt(storedStart, 10);
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const remainingTime = 600 - elapsed;
 
-    // Delete emails
-    deleteBtn.addEventListener("click", deleteSelectedEmails);
-
-    // Back to inbox
-    backToInbox.addEventListener("click", () => {
-        emailDetail.style.display = "none";
-        document.querySelector(".inbox-container").style.display = "block";
-    });
-
-    // Copy email
-    copyBtn.addEventListener("click", copyToClipboard);
-
-    // Smooth scrolling for anchor links
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-        anchor.addEventListener('click', function (e) {
-            e.preventDefault();
-            const target = document.querySelector(this.getAttribute('href'));
-            if (target) {
-                target.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'start'
-                });
+            if (remainingTime > 0) {
+                // Valid session found
+                currentAccount = storedEmail;
+                currentToken = storedToken;
+                generatedEmail.textContent = storedEmail;
+                
+                if (generateBtn) {
+                    generateBtn.disabled = true;
+                    generateBtn.classList.add("disabled");
+                    generateBtn.innerHTML = '<i class="fas fa-lock"></i> Locked';
+                }
+                
+                timeLeft = remainingTime;
+                startTimer();
+                fetchInbox();
+                console.log("✅ Restored existing session");
+            } else {
+                // Session expired
+                handleExpiration();
+                console.log("❌ Session expired");
             }
-        });
-    });
-});
-
-// Handle page visibility changes
-document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && currentToken) {
-        fetchInbox(); // Refresh inbox when tab becomes visible
+        } else {
+            // No session found
+            console.log("ℹ️ No existing session found");
+            if (generatedEmail) {
+                generatedEmail.textContent = "Click generate to create email";
+            }
+        }
+    } catch (error) {
+        console.error("❌ Error initializing app:", error);
     }
-});
+}
 
-// Handle beforeunload
-window.addEventListener("beforeunload", () => {
-    if (expirationTimer) {
-        clearInterval(expirationTimer);
-    }
-});
+// ❓ FAQ functionality
+function i
